@@ -1,0 +1,49 @@
+name: Build SpliX
+
+on:
+  push:
+    paths:
+      - 'src/**'
+  pull_request:
+    paths:
+      - 'src/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v4
+
+      - name: Declare short commit variable
+        id: vars
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - id: docker-image
+        name: Docker image: initialize cache
+        uses: actions/cache@v5
+        with:
+          path: ~/image-cache
+          key: image-cache-${{ runner.os }}
+
+      - if: steps.image-cache.outputs.cache-hit != 'true'
+        name: Docker image: download from repository and cache
+        run: |
+          docker pull quay.io/pypa/manylinux2014_x86_64
+          docker save -o ~/image-cache/manylinux2014_x86_64.tar manylinux2014_x86_64
+
+      - if: steps.image-cache.outputs.cache-hit == 'true'
+        name: Docker image: load from cache
+        run: docker load -i ~/image-cache/manylinux2014_x86_64.tar
+
+      - name: Build SpliX
+        run: echo 'cd /splix && make DRV_ONLY=1 -j4' | docker run -i --rm manylinux2014_x86_64
+
+      - name: Save build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: splix_x86_64_${{ steps.vars.outputs.sha_short }}
+          path: optimized/
