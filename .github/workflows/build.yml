@@ -1,0 +1,77 @@
+name: Build SpliX
+
+on:
+  push:
+    paths:
+      - 'src/**'
+  pull_request:
+    paths:
+      - 'src/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v4
+
+      - name: Declare short commit variable
+        id: vars
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Create cache directory
+        run: mkdir ~/cache
+
+      - id: cache
+        name: Initialize cache
+        uses: actions/cache@v5
+        with:
+          path: ~/cache
+          key: cache-${{ runner.os }}
+
+      - name: APT install
+        run: |
+          sudo sed -i 's~Types: ~Types: deb-src ~' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt update
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y build-essential libcups2-dev cups groff nano less ninja-build
+          sudo DEBIAN_FRONTEND=noninteractive apt build-dep -y cups
+
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Build polyfill-glibc
+        run: |
+          git clone https://github.com/corsix/polyfill-glibc.git && cd polyfill-glibc && ninja
+          cp polyfill-glibc ~/cache/
+
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Build libjbig
+        run: |
+          mkdir jbig && cd jbig && apt source jbigkit
+          cd jbigkit-* && make -j4
+          cp libjbig/libjbig85.a ~/cache/
+
+      - name: Build SpliX
+        run: |
+          JB=$(realpath ~/cache/libjbig85.a)
+          echo $JB
+          ls -la $JB
+          # use static libjbig
+          sed -i "s~-ljbig85~/${JB}~" module.mk
+          # force libcupsimage dynamic linking, as newer cups on newer ubuntu links it from libcups
+          sed -i 's~rastertoqpdl_LIBS.*:= ~rastertoqpdl_LIBS := -lcupsimage ~' module.mk
+          grep 'libjbig' module.mk
+          make DRV_ONLY=1 -j4
+          rm -rf optimized/src
+
+      - name: Patch for older glibc
+        run: |
+          ~/cache/polyfill-glibc --target-glibc=2.17 optimized/rastertoqpdl
+          ~/cache/polyfill-glibc --target-glibc=2.17 optimized/pstoqpdl
+
+      - name: Save build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: splix_x86_64_${{ steps.vars.outputs.sha_short }}
+          path: optimized/
